@@ -1,6 +1,6 @@
 # SiMa: Federating Data Silos
 
-This repo includes the code used for implementing SiMa, as described in the VLDB 2022 submission "SiMa: Federating Data Silos".
+This repo includes the code used for implementing SiMa, as described in "SiMa: Federating Data Silos using GNNs".
 
 ## Repo structure
 
