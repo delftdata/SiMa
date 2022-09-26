@@ -67,9 +67,9 @@ class MLPPredictor(nn.Module):
 
 ############ Define Casanova model ############
 
-class CasanovaModel():
+class SimaModel():
     """
-        Casanova model consisting of:
+        SiMa model consisting of:
             - GraphSAGE for computing embeddings of nodes
             - Predictor model for link prediction between nodes
             - Optimizer initialization (Adam)
@@ -78,4 +78,3 @@ class CasanovaModel():
         self.gnn = GraphSAGE(in_feats, h_feats)
         self.predictor = MLPPredictor(h_feats)
         self.optimizer = torch.optim.Adam(itertools.chain(self.gnn.parameters(), self.predictor.parameters()), lr=lr_rate, weight_decay=wd)
-

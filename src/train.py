@@ -1,7 +1,7 @@
 import dgl
 import torch.nn.functional as F
 import torch
-from model import CasanovaModel
+from model import SimaModel
 import numpy as np
 import scipy.sparse as sp
 import random
@@ -145,7 +145,7 @@ def train_model(graphs, graphs_neg, epochs, embed_size, incremental=False, rate=
             model: trained model - including gnn and predictor
     """
 
-    model = CasanovaModel(graphs[0].ndata['feat'].shape[1], embed_size, rate, wd)
+    model = SimaModel(graphs[0].ndata['feat'].shape[1], embed_size, rate, wd)
 
     if incremental:
         for i in range(len(graphs)):
