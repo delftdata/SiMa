@@ -59,7 +59,7 @@ defusedxml==0.6.0
 dgl==0.5.3
 dill==0.3.4
 distlib==0.3.4
-distributed==2.5.2
+distributed==2021.10.0
 docker==4.2.1
 docutils==0.14
 entrypoints==0.3
