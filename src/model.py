@@ -5,7 +5,9 @@ import torch.nn.functional as F
 import torch
 import itertools
 
+
 ############ Define GNN model ############
+
 
 class GraphSAGE(nn.Module):
     """
@@ -18,7 +20,6 @@ class GraphSAGE(nn.Module):
         super(GraphSAGE, self).__init__()
         self.conv1 = dglnn.SAGEConv(in_feats, h_feats, 'pool')
 
-
     def forward(self, g, in_feat):
         h = self.conv1(g, in_feat)
         h = F.normalize(h)
@@ -26,12 +27,12 @@ class GraphSAGE(nn.Module):
 
 ############ Define prediction model ############
 
+
 class MLPPredictor(nn.Module):
     """
         Multi-layer Perceptron predictor used in Casanova:
             - 1 hidden layer
     """
-
 
     def __init__(self, h_feats):
         super().__init__()
@@ -65,9 +66,9 @@ class MLPPredictor(nn.Module):
             return g.edata['score']
 
 
-############ Define Casanova model ############
+############ Define SiMa model ############
 
-class SimaModel():
+class SimaModel:
     """
         SiMa model consisting of:
             - GraphSAGE for computing embeddings of nodes
@@ -78,3 +79,39 @@ class SimaModel():
         self.gnn = GraphSAGE(in_feats, h_feats)
         self.predictor = MLPPredictor(h_feats)
         self.optimizer = torch.optim.Adam(itertools.chain(self.gnn.parameters(), self.predictor.parameters()), lr=lr_rate, weight_decay=wd)
+
+class MLPPredictor_simple(nn.Module):
+    """
+        Multi-layer Perceptron predictor used in Casanova:
+            - 1 hidden layer
+    """
+
+    def __init__(self, h_feats):
+        super().__init__()
+        self.W1 = nn.Linear(h_feats * 2, h_feats)
+        self.W2 = nn.Linear(h_feats, 1)
+
+    def apply_edges(self, edges):
+        """
+        Computes a scalar score for each edge of the given graph.
+
+        Parameters
+        ----------
+        edges :
+            Has three members ``src``, ``dst`` and ``data``, each of
+            which is a dictionary representing the features of the
+            source nodes, the destination nodes, and the edges
+            themselves.
+
+        Returns
+        -------
+        dict
+            A dictionary of new edge features.
+        """
+        h = torch.cat([edges.src['feat'], edges.dst['feat']], 1)
+        return {'score_mlp': self.W2(F.relu(self.W1(h))).squeeze(1)}
+
+    def forward(self, g):
+        with g.local_scope():
+            g.apply_edges(self.apply_edges)
+            return g.edata['score_mlp']

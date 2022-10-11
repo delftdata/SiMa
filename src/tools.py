@@ -18,6 +18,7 @@ import math
 from scipy.stats import skew, kurtosis
 import nltk
 import re
+import pickle
 
 # ------------- FUNCTIONS IMPORTED FROM SHERLOCK ---------------
 
@@ -125,6 +126,92 @@ def extract_bag_of_words_features(data, n_val):
 
 # -----------------------------------------------------
 
+def create_configuration(base_to_synthetic, min_tables_per_silo, max_tables_per_silo, number_of_silos, con_type):
+    config = dict()
+
+    if con_type == 'incremental':
+        random_bases = list(base_to_synthetic.keys())
+        random.shuffle(random_bases)
+
+
+        for i in range(number_of_silos):
+            tables_per_silo  = max_tables_per_silo
+            config[i] = dict()
+
+            for j in range(0, i+1):
+                previous_right  = 0
+                if j == i:
+                    config[i][random_bases[j]] = [0, tables_per_silo]
+                else:
+                    if i > 0:
+                        previous_right = config[i-1][random_bases[j]][1]
+                    config[i][random_bases[j]] = [previous_right, previous_right + tables_per_silo]
+    elif con_type == 'case1':
+        i = 0
+        for base, synthetic in base_to_synthetic.items():
+            config[i] = dict()
+            random.shuffle(synthetic)
+
+            no_datasets = random.randint(min_tables_per_silo, max_tables_per_silo)
+
+            config[i][base] = [0, no_datasets]
+            i += 1
+    elif con_type == 'case2':
+        random_bases = list(base_to_synthetic.keys())
+        random.shuffle(random_bases)
+        last = 0
+        increment = len(random_bases) // number_of_silos
+        for i in range(number_of_silos):
+            config[i] = dict()
+            for j in range(last, last + increment):
+
+                random.shuffle(base_to_synthetic[random_bases[j]])
+                config[i][random_bases[j]] = [0, random.randint(min_tables_per_silo, max_tables_per_silo)]
+            last = last + increment
+        if last <= len(random_bases):
+            for j in range(last, len(random_bases)):
+
+                random.shuffle(base_to_synthetic[random_bases[j]])
+
+                config[i][random_bases[j]] = [0, random.randint(min_tables_per_silo, max_tables_per_silo)]
+    elif con_type == 'random':
+        bases = list(base_to_synthetic.keys())
+        num_bases = len(base_to_synthetic)
+        last_accessed = {i: 0 for i in range(num_bases)}
+
+        for i in range(number_of_silos):
+            config[i] = dict()
+
+            base_indexes = random.sample(range(num_bases), random.randint(1, num_bases))
+
+            for index in base_indexes:
+
+                tables = random.choice(range(min_tables_per_silo, max_tables_per_silo+1))
+
+                config[i][bases[index]] = [last_accessed[index], last_accessed[index] + tables]
+                last_accessed[index] += tables
+    else:
+        bases = list(base_to_synthetic.keys())
+        random.shuffle(bases)
+        num_bases = len(base_to_synthetic)
+        last_accessed = {i: 0 for i in range(num_bases)}
+
+        for i in range(number_of_silos):
+            config[i]  = dict()
+
+            base_indexes = [i, (i+1)%number_of_silos, (i+2)%number_of_silos]
+
+            for index in base_indexes:
+
+                tables = random.choice(range(min_tables_per_silo, max_tables_per_silo+1))
+
+                config[i][bases[index]] = [last_accessed[index], last_accessed[index] + tables]
+                last_accessed[index] += tables
+
+
+    return config
+
+
 def get_features(data: pd.DataFrame) -> pd.DataFrame:
     """
         Code for profiling tabular datasets and based on the profiler of Sherlock.
@@ -147,30 +234,78 @@ def get_features(data: pd.DataFrame) -> pd.DataFrame:
     features_list = []
 
     for column in data_columns:
-
         column = pd.Series(column).astype(str)
 
-        f = OrderedDict(list(extract_bag_of_characters_features(column).items()) + list(extract_bag_of_words_features(column, len(column)).items()))
+        f = OrderedDict(list(extract_bag_of_characters_features(column).items()) + list(
+            extract_bag_of_words_features(column, len(column)).items()))
 
         features_list.append(f)
 
-    return pd.DataFrame(features_list).reset_index(drop=True)*1
+    return pd.DataFrame(features_list).reset_index(drop=True) * 1
 
-def create_feature_tensor(col_features: dict(), col_ids: dict()):
+
+def create_profiles_tensor(col_profiles: dict(), col_ids: dict()):
     """
 
-    :param col_features: Correspondences between columns and features
+    :param col_profiles: Correspondences between columns and their profiles
     :param col_ids: Correspondences between columns and ids
-    :return: Correspondence between col ids and features in the form of a tensor
+    :return: Correspondence between col ids and profiles in the form of a tensor
     """
 
-    features_per_column = [[]] * len(col_ids)
+    profiles_per_column = [[]] * len(col_ids)
 
-    for col, features in col_features.items():
-        features_per_column[col_ids[col]] = features
+    for col, profile in col_profiles.items():
+        profiles_per_column[col_ids[col]] = profile
 
-    return torch.tensor(features_per_column, dtype=torch.float)
+    return torch.tensor(profiles_per_column, dtype=torch.float)
 
+def get_coma_results(results_file: str, all_cols_ids):
+    """
+        Returns a list containing the matching results of the matching method to which the
+        input .json file belongs.
+    """
+
+    def _parse_tuple(string):  # simple function to parse tuples
+        try:
+            s = ast.literal_eval(str(string))
+            if type(s) == tuple:
+                return s
+            return
+        except:
+            return
+
+    with open(results_file) as f:
+        results_dict = json.load(f)
+
+    results = []
+
+    for dict_score in results_dict:
+        for k, v in dict_score.items():
+            kt = _parse_tuple(k)
+            kt1, kt2 = kt
+            results.append(((kt1[0][:-4], kt1[1]), (kt2[0][:-4], kt2[1]), v))
+
+    # Normalize similarity scores
+    results.sort(key=lambda tup: tup[2])
+    amin, amax = results[0][2], results[-1][2]
+    for i, val in enumerate(results):
+        results[i] = (val[0], val[1], max(0, (val[2] - amin) / (amax - amin)))
+
+    # keep results only for the columns included in the silo configuration and belong to different silos
+    col_to_silo = dict()
+
+    for i, cols_to_ids in all_cols_ids.items():
+        for col in cols_to_ids:
+            col_to_silo[col] = i
+
+    filtered_results = []
+
+    for c1, c2, score in results:
+        if c1 in col_to_silo and c2 in col_to_silo:
+            if col_to_silo[c1] != col_to_silo[c2]:
+                filtered_results.append((c1, c2, score))
+
+    return filtered_results
 
 def get_fasttext_embeddings(values, model_file):
     """
@@ -231,7 +366,6 @@ def get_embeddings(data: pd.DataFrame, model_file) -> pd.DataFrame:
 
 
 def generate_ids_paths(dir_path: str) -> (dict(), dict()):
-
     """
         Connects each column in the dataset to an id, and each file to each full_path
 
@@ -259,61 +393,15 @@ def generate_ids_paths(dir_path: str) -> (dict(), dict()):
 
     return columns_to_ids, files_to_paths
 
-
-def get_results(results_file: str, method: str):
-
-    """
-        Returns a list containing the matching results of the matching method to which the
-        input .json file belongs.
-    """
-
-    def _parse_tuple(string):  # simple function to parse tuples
-        try:
-            s = ast.literal_eval(str(string))
-            if type(s) == tuple:
-                return s
-            return
-        except:
-            return
-
-    with open(results_file) as f:
-        results_dict = json.load(f)
-
-    results = []
-
-    if method == 'EmbDI' or method == 'JaccardLevenMatcher':
-        for k, v in results_dict.items():
-            kt = _parse_tuple(k)
-            results.append((kt[0], kt[1], v))
-    else:
-        for d in results_dict['results']:
-            results.append(((d['source']['tbl_nm'], d['source']['clm_nm']),
-                            (d['target']['tbl_nm'], d['target']['clm_nm']), d['sim']))
-
-    # Normalize similarity scores
-    amin, amax = results[-1][2], results[0][2]
-    for i, val in enumerate(results):
-        results[i] = (val[0], val[1], max(0, (val[2] - amin) / (amax - amin)))
-
-    return results
-
-def get_ground_truth(ground_truth_file: str):
-
-    """
-        Returns a set of matches that should hold among datasets of different categories.
-    """
-
-
-def columns_to_features(files_to_paths: dict()) -> dict():
-
+def columns_to_profiles(files_to_paths: dict()) -> dict():
     """
         Input:
             files_to_paths: Correspondences between files and their full paths
         Output:
-            col_features: dictionary with column - features correspondence
+            col_features: dictionary with column - profile correspondence
     """
 
-    col_features = dict()
+    col_profiles = dict()
     count = 1
     cols_count = len(files_to_paths)
     for file, filepath in files_to_paths.items():
@@ -326,18 +414,14 @@ def columns_to_features(files_to_paths: dict()) -> dict():
 
         cols = file_pd.columns.tolist()
 
-        col_features_pd = get_features(file_pd)
+        col_profiles_pd = get_features(file_pd)
 
-        feature_list = col_features_pd.values.tolist()
+        profiles_list = col_profiles_pd.values.tolist()
 
         for i in range(len(cols)):
+            col_profiles[(file, cols[i])] = profiles_list[i]
 
-            col_features[(file, cols[i])] = feature_list[i]
-
-    return col_features
-
-
-
+    return col_profiles
 
 
 def create_graphs(category_tables, cols_to_ids, graph_num, feat_list, ground_truth, no_datasets):
@@ -358,11 +442,8 @@ def create_graphs(category_tables, cols_to_ids, graph_num, feat_list, ground_tru
             all_ids_cols: inverted all_cols_ids
     """
 
-
     # dictionary holding the datasets that each relatedness graph includes
     samples = {i: [] for i in range(graph_num)}
-
-
 
     # sample relationships for each category
     for k, v in category_tables.items():
@@ -373,7 +454,7 @@ def create_graphs(category_tables, cols_to_ids, graph_num, feat_list, ground_tru
             for _, s in samples.items():
                 s.extend(random.sample(v[(step * l // graph_num):((step + 1) * l // graph_num)], no_datasets))
                 step += 1
-        else: # if there are not enough fabricated datasets for each category, some relatedness graphs receive datasets from more categories than others
+        else:  # if there are not enough fabricated datasets for each category, some relatedness graphs receive datasets from more categories than others
             gn = graph_num
             while l // gn < no_datasets:
                 gn = gn - 1
@@ -383,7 +464,6 @@ def create_graphs(category_tables, cols_to_ids, graph_num, feat_list, ground_tru
                     print('Graph {} receives datasets from source {}'.format(i, k))
                     s.extend(random.sample(v[(step * l // gn):((step + 1) * l // gn)], no_datasets))
                     step += 1
-
 
     columns = {i: [] for i in range(graph_num)}
 
@@ -413,9 +493,7 @@ def create_graphs(category_tables, cols_to_ids, graph_num, feat_list, ground_tru
         for c in columns[i]:
             features[i][all_cols_ids[i][c]] = feat_list[cols_to_ids[c]]
 
-
     edges = {i: [] for i in range(graph_num)}
-
 
     for i, cols in columns.items():
 
@@ -423,7 +501,7 @@ def create_graphs(category_tables, cols_to_ids, graph_num, feat_list, ground_tru
             matched = False
             for k in range(j + 1, len(cols)):
                 if cols[j][1] == cols[k][1] or (cols[j][1], cols[k][1]) in ground_truth or (
-                cols[k][1], cols[j][1]) in ground_truth:
+                        cols[k][1], cols[j][1]) in ground_truth:
                     matched = True
                     edge1 = (all_cols_ids[i][cols[j]], all_cols_ids[i][cols[k]])
                     edge2 = (edge1[1], edge1[0])
@@ -432,27 +510,38 @@ def create_graphs(category_tables, cols_to_ids, graph_num, feat_list, ground_tru
             if not matched:
                 edges[i].append((all_cols_ids[i][cols[j]], all_cols_ids[i][cols[j]]))
 
-
     graphs = dict()
-
     for i in range(graph_num):
         et = torch.tensor(edges[i], dtype=torch.long).t().contiguous()
         ft = torch.tensor(features[i], dtype=torch.float)
         graph = dgl.graph((et[0], et[1]))
-        graph.ndata['feat'] = F.normalize(ft, 2, 0) # normalize input features
+        graph.ndata['feat'] = F.normalize(ft, 2, 0)  # normalize input features
         graphs[i] = graph
 
     return graphs, columns, all_cols_ids, all_ids_cols
 
+
 def metrics(count_tp, count_fp, count_fn):
-    precision = (count_tp*1.0)/(count_tp + count_fp)
-    recall = (count_tp*1.0)/(count_tp + count_fn)
-    f_score = 2*precision*recall/(precision + recall)
-    print('Precision: ' + str(precision))
-    print('Recall: ' + str(recall))
-    print('F-score: ' + str(f_score))
+    precision = (count_tp * 1.0) / (count_tp + count_fp)
+    recall = (count_tp * 1.0) / (count_tp + count_fn)
+    f1_score = 2 * precision * recall / (precision + recall)
+    #print('Precision: ' + str(precision))
+    #print('Recall: ' + str(recall))
+    #print('F-score: ' + str(f_score))
+    return precision, recall, f1_score
 
 
+def fabricated_to_source_filename(fabricated_name: str) -> str:
+    """
+    Simple function that returns the name of the source on which the fabricated dataset is based. It uses info on the
+    naming conventions we use for the fabricated files, i.e. sourcename_[clean|noisy]_id.csv
+    :param fabricated_name: The filename of the fabricated dataset
+    :return: The name of the source -> sourcename
+    """
+
+    source_name = re.split('_clean_|_noisy_', fabricated_name)[0]
+
+    return source_name
 
 ############ Functions for multiprocessing of GNN results############
 
@@ -463,6 +552,7 @@ def prediction_score(h1, h2, c11, c22, cid1, cid2, pred):
     hh = torch.cat([first, second])
     score = torch.sigmoid(pred.W2(F.relu(pred.W1(hh)))).detach().item()
     return score
+
 
 def get_process_pairs(columns1, columns2, h1, h2, cid1, cid2, pred):
     for c11, c22 in itertools.product(columns1, columns2):
@@ -481,7 +571,9 @@ def run_multithread(columns1, columns2, h1, h2, cid1, cid2, pred, no_threads):
 
     return similarities
 
+
 ############ Functions for multiprocessing of baseline results############
+
 
 def get_baseline_pairs(columns1, columns2, h1, h2, cid1, cid2):
     for c11, c22 in itertools.product(columns1, columns2):
