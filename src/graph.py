@@ -5,26 +5,18 @@ import torch.nn.functional as F
 from tools import fabricated_to_source_filename
 
 
-def create_relatedness_graphs(base_to_derived, cols_to_ids, profiles_list, ground_truth, silo_config):
+def create_relatedness_graphs_from_silos(cols_to_ids, profiles_list, ground_truth, datasets_per_silo):
 
 
     """
         Function to construct relatedness graphs.
 
         Input:
-            base_to_derived: dictionary which stores source_table - fabricated datasets correspondences
             cols_to_ids: dictionary with columns to ids correspondences
             profiles_list: stores for each node id the corresponding profile
 
     """
-    no_silos = len(silo_config)
-
-    datasets_per_silo = {i: [] for i in range(no_silos)}
-
-    for silo_num, datasets_per_base in silo_config.items():
-
-        for base, index_range in datasets_per_base.items():
-            datasets_per_silo[silo_num].extend(base_to_derived[base][index_range[0]:index_range[1]])
+    no_silos = len(datasets_per_silo)
 
     columns = {i: [] for i in range(no_silos)}
 

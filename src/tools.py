@@ -126,11 +126,26 @@ def extract_bag_of_words_features(data, n_val):
 
 # -----------------------------------------------------
 
-def create_configuration(base_to_synthetic, min_tables_per_silo, max_tables_per_silo, number_of_silos, con_type):
+def create_configuration(cols_to_ids, min_tables_per_silo, max_tables_per_silo, number_of_silos, con_type):
     config = dict()
 
+    cols = list(cols_to_ids.keys())
+
+    base_derived = dict()
+
+    for c in cols:
+        match = re.match(r"([a-z0-9_]+)_([0-9]+)", c[0], re.I)   
+        if match[1] in base_derived:
+            base_derived[match[1]].append(c[0])
+        else:
+            base_derived[match[1]] = [c[0]]
+
+    for c,t in base_derived.items():    
+        t = list(set(t))
+        base_derived[c] = t
+
     if con_type == 'incremental':
-        random_bases = list(base_to_synthetic.keys())
+        random_bases = list(base_derived.keys())
         random.shuffle(random_bases)
 
 
@@ -148,7 +163,7 @@ def create_configuration(base_to_synthetic, min_tables_per_silo, max_tables_per_
                     config[i][random_bases[j]] = [previous_right, previous_right + tables_per_silo]
     elif con_type == 'case1':
         i = 0
-        for base, synthetic in base_to_synthetic.items():
+        for base, synthetic in base_derived.items():
             config[i] = dict()
             random.shuffle(synthetic)
 
@@ -157,7 +172,7 @@ def create_configuration(base_to_synthetic, min_tables_per_silo, max_tables_per_
             config[i][base] = [0, no_datasets]
             i += 1
     elif con_type == 'case2':
-        random_bases = list(base_to_synthetic.keys())
+        random_bases = list(base_derived.keys())
         random.shuffle(random_bases)
         last = 0
         increment = len(random_bases) // number_of_silos
@@ -165,18 +180,18 @@ def create_configuration(base_to_synthetic, min_tables_per_silo, max_tables_per_
             config[i] = dict()
             for j in range(last, last + increment):
 
-                random.shuffle(base_to_synthetic[random_bases[j]])
+                random.shuffle(base_derived[random_bases[j]])
                 config[i][random_bases[j]] = [0, random.randint(min_tables_per_silo, max_tables_per_silo)]
             last = last + increment
         if last <= len(random_bases):
             for j in range(last, len(random_bases)):
 
-                random.shuffle(base_to_synthetic[random_bases[j]])
+                random.shuffle(base_derived[random_bases[j]])
 
                 config[i][random_bases[j]] = [0, random.randint(min_tables_per_silo, max_tables_per_silo)]
     elif con_type == 'random':
-        bases = list(base_to_synthetic.keys())
-        num_bases = len(base_to_synthetic)
+        bases = list(base_derived.keys())
+        num_bases = len(base_derived)
         last_accessed = {i: 0 for i in range(num_bases)}
 
         for i in range(number_of_silos):
@@ -191,9 +206,9 @@ def create_configuration(base_to_synthetic, min_tables_per_silo, max_tables_per_
                 config[i][bases[index]] = [last_accessed[index], last_accessed[index] + tables]
                 last_accessed[index] += tables
     else:
-        bases = list(base_to_synthetic.keys())
+        bases = list(base_derived.keys())
         random.shuffle(bases)
-        num_bases = len(base_to_synthetic)
+        num_bases = len(base_derived)
         last_accessed = {i: 0 for i in range(num_bases)}
 
         for i in range(number_of_silos):
@@ -209,8 +224,31 @@ def create_configuration(base_to_synthetic, min_tables_per_silo, max_tables_per_
                 last_accessed[index] += tables
 
 
-    return config
+    refined_config = dict()
 
+    for silo, base_range in config.items():
+        refined_config[silo] = set()
+        for base, range_index in base_range.items():
+            for i in range(range_index[0], range_index[1]):
+                refined_config[silo].add(base_derived[base][i])
+
+
+    return refined_config
+
+def csvs_to_dataframes(dir_path: str):
+    dataframe_dict = dict()
+    
+    for filename in os.listdir(dir_path):
+        if filename.endswith('.csv'):
+            df = pd.read_csv(os.path.join(dir_path, filename))
+            
+            columns = df.columns.tolist()
+            
+            for col in columns:
+                df.rename(columns={col: col.rstrip()}, inplace=True)
+            
+            dataframe_dict[filename] = df
+    return dataframe_dict
 
 def get_features(data: pd.DataFrame) -> pd.DataFrame:
     """
@@ -254,12 +292,13 @@ def create_profiles_tensor(col_profiles: dict(), col_ids: dict()):
 
     profiles_per_column = [[]] * len(col_ids)
 
-    for col, profile in col_profiles.items():
-        profiles_per_column[col_ids[col]] = profile
+
+    for col, id in col_ids.items():
+        profiles_per_column[id] = col_profiles[col]
 
     return torch.tensor(profiles_per_column, dtype=torch.float)
 
-def get_coma_results(results_file: str, all_cols_ids):
+def get_coma_results(results_file: str, all_cols_ids, all_pairs):
     """
         Returns a list containing the matching results of the matching method to which the
         input .json file belongs.
@@ -299,13 +338,37 @@ def get_coma_results(results_file: str, all_cols_ids):
             col_to_silo[col] = i
 
     filtered_results = []
+    all_pairs_coma = set()
 
     for c1, c2, score in results:
         if c1 in col_to_silo and c2 in col_to_silo:
             if col_to_silo[c1] != col_to_silo[c2]:
                 filtered_results.append((c1, c2, score))
+                all_pairs_coma.add((c1, c2))
+
+    # make results complete for pairs that coma didn't output results for
+
+    for pair in all_pairs:
+        if pair not in all_pairs_coma and (pair[1], pair[0]) not in all_pairs_coma:
+            filtered_results.append((pair[0], pair[1], 0))
 
     return filtered_results
+
+def get_starmie_vectors(dataset_path, embeddings_path):
+   
+    dataframes = csvs_to_dataframes(dataset_path)
+    
+    with open(embeddings_path, 'rb') as file:
+            v = pickle.load(file)
+
+    file_cols_vectors = dict()
+    for file, vectors in v:
+        file_cols_vectors[file] = dict()
+        for i in range(len(vectors)):
+            file_cols_vectors[file][dataframes[file].columns[i]] = vectors[i]    
+
+    return file_cols_vectors
+
 
 def get_fasttext_embeddings(values, model_file):
     """
@@ -423,104 +486,6 @@ def columns_to_profiles(files_to_paths: dict()) -> dict():
 
     return col_profiles
 
-
-def create_graphs(category_tables, cols_to_ids, graph_num, feat_list, ground_truth, no_datasets):
-    """
-        Function to create data silo configurations (and their corresponding relatedness graphs).
-
-        Input:
-            base_to_synthetic: dictionary which stores source_table - fabricated datasets correspondences
-            cols_to_ids: dictionary with columns to ids correspondences
-            graph_num: number of relatedness graphs (silos) to create
-            feat_list: list containing column ids to features correspondences
-            ground_truth: contains matches that should hold among columns of datasets belonging to different silos
-            no_datasets: number of datasets to include per domain (source table)
-        Output:
-            graphs: relatedness graphs
-            columns: columns included in each relatedness graph
-            all_cols_ids: columns to ids correspondence for each relatedness graph
-            all_ids_cols: inverted all_cols_ids
-    """
-
-    # dictionary holding the datasets that each relatedness graph includes
-    samples = {i: [] for i in range(graph_num)}
-
-    # sample relationships for each category
-    for k, v in category_tables.items():
-        l = len(v)
-
-        if l // graph_num >= no_datasets:
-            step = 0
-            for _, s in samples.items():
-                s.extend(random.sample(v[(step * l // graph_num):((step + 1) * l // graph_num)], no_datasets))
-                step += 1
-        else:  # if there are not enough fabricated datasets for each category, some relatedness graphs receive datasets from more categories than others
-            gn = graph_num
-            while l // gn < no_datasets:
-                gn = gn - 1
-            step = 0
-            for i, s in samples.items():
-                if i >= (graph_num - gn):
-                    print('Graph {} receives datasets from source {}'.format(i, k))
-                    s.extend(random.sample(v[(step * l // gn):((step + 1) * l // gn)], no_datasets))
-                    step += 1
-
-    columns = {i: [] for i in range(graph_num)}
-
-    for k, _ in cols_to_ids.items():
-
-        for i, s in samples.items():
-            if k[0] in s:
-                columns[i].append(k)
-                break
-
-    all_cols_ids = dict()
-    all_ids_cols = dict()
-
-    for i, col in columns.items():
-        count = 0
-        d = dict()
-        for c in col:
-            d[c] = count
-            count += 1
-        all_cols_ids[i] = d
-        invd = {v: k for k, v in d.items()}
-        all_ids_cols[i] = invd
-
-    features = {i: [[]] * len(columns[i]) for i in range(graph_num)}
-
-    for i in range(graph_num):
-        for c in columns[i]:
-            features[i][all_cols_ids[i][c]] = feat_list[cols_to_ids[c]]
-
-    edges = {i: [] for i in range(graph_num)}
-
-    for i, cols in columns.items():
-
-        for j in range(len(cols)):
-            matched = False
-            for k in range(j + 1, len(cols)):
-                if cols[j][1] == cols[k][1] or (cols[j][1], cols[k][1]) in ground_truth or (
-                        cols[k][1], cols[j][1]) in ground_truth:
-                    matched = True
-                    edge1 = (all_cols_ids[i][cols[j]], all_cols_ids[i][cols[k]])
-                    edge2 = (edge1[1], edge1[0])
-                    edges[i].append(edge1)
-                    edges[i].append(edge2)
-            if not matched:
-                edges[i].append((all_cols_ids[i][cols[j]], all_cols_ids[i][cols[j]]))
-
-    graphs = dict()
-    for i in range(graph_num):
-        et = torch.tensor(edges[i], dtype=torch.long).t().contiguous()
-        ft = torch.tensor(features[i], dtype=torch.float)
-        graph = dgl.graph((et[0], et[1]))
-        graph.ndata['feat'] = F.normalize(ft, 2, 0)  # normalize input features
-        graphs[i] = graph
-
-    return graphs, columns, all_cols_ids, all_ids_cols
-
-
 def metrics(count_tp, count_fp, count_fn):
     precision = (count_tp * 1.0) / (count_tp + count_fp)
     recall = (count_tp * 1.0) / (count_tp + count_fn)
@@ -599,5 +564,38 @@ def run_baseline_multithread(columns1, columns2, h1, h2, cid1, cid2, no_threads)
     with Pool(no_threads) as process_pool:
         similarities = process_pool.map(baseline_process_score,
                                         get_baseline_pairs(columns1, columns2, h1, h2, cid1, cid2))
+
+    return similarities
+
+
+########## Functions for multiprocessing of starmie results ############
+
+def get_starmie_pairs(columns1, columns2, vec):
+    for c11, c22 in itertools.product(columns1, columns2):
+        yield c11, c22, vec
+
+def starmie_score(c11, c22, vec):
+   
+  
+    file1 = c11[0] + '.csv'  
+    file2 = c22[0] + '.csv'
+
+
+    col1 = c11[1]
+    col2 = c22[1]
+
+    vec1 = vec[file1][col1]
+    vec2 = vec[file2][col2]
+
+    return np.dot(vec1, vec2)/(norm(vec1)*norm(vec2))
+
+def starmie_process_score(input_tuple):
+    c11, c22, vec = input_tuple
+    score = starmie_score(c11, c22, vec)
+    return c11, c22, score
+
+def run_starmie_multithread(columns1, columns2, vec, no_threads):
+    with Pool(no_threads) as process_pool:
+        similarities = process_pool.map(starmie_process_score, get_starmie_pairs(columns1, columns2, vec))
 
     return similarities

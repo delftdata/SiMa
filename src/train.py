@@ -7,7 +7,7 @@ import scipy.sparse as sp
 import random
 import networkx as nx
 from multiprocessing import cpu_count
-from tools import run_multithread, metrics, fabricated_to_source_filename
+from tools import run_multithread, run_starmie_multithread, metrics, fabricated_to_source_filename
 import itertools
 from torchmetrics.functional import f1_score
 
@@ -377,12 +377,31 @@ def compute_all_probs_labels(all_columns, all_cols_ids, embeddings, ground_truth
     cols = [i for i in range(no_graphs)]
     all_probs = []
     all_labels = []
+    all_similarities = []
     for c1, c2 in itertools.combinations(cols, 2):
         print("Computing between graphs: " + str(c1) + " - " + str(c2))
 
         no_threads = cpu_count() - 1
         similarities = run_multithread(all_columns[c1], all_columns[c2], embeddings[c1], embeddings[c2], all_cols_ids[c1],
                                        all_cols_ids[c2], model.predictor, no_threads)
+        all_similarities.extend(similarities)
+        labels, probabilities = compute_probabilities_labels(similarities, ground_truth)
+        all_probs.extend(probabilities)
+        all_labels.extend(labels)
+
+    return np.array(all_labels), np.array(all_probs), all_similarities
+
+def compute_starmie_probs_labels(all_columns, vectors, ground_truth, no_graphs):
+
+    cols = [i for i in range(no_graphs)]
+
+    all_probs = []
+    all_labels = []
+    for c1, c2 in itertools.combinations(cols, 2):
+        
+        print("Computing between graphs: " + str(c1) + " - " + str(c2))
+        no_threads = cpu_count() - 1
+        similarities = run_starmie_multithread(all_columns[c1], all_columns[c2], vectors, no_threads)
         labels, probabilities = compute_probabilities_labels(similarities, ground_truth)
         all_probs.extend(probabilities)
         all_labels.extend(labels)
